@@ -1,0 +1,55 @@
+name: macOS prompt fix test package
+on:
+  push:
+    branches: [build/macos-prompt-test]
+    paths: [.github/workflows/macos-prompt-test.yml]
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: macos-15
+    timeout-minutes: 45
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: 93c04315ed55307eb0a9864c03d590ab2b0f459a
+          lfs: false
+      - run: ./scripts/prepare_bundled_database.ps1
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.47.5'
+          channel: stable
+      - run: ./scripts/verify_flutter_sources.ps1
+      - run: flutter pub get --enforce-lockfile
+      - run: dart run tool/tag_catalog/verify_bundled_databases.dart
+      - run: flutter gen-l10n
+      - run: dart run build_runner build --delete-conflicting-outputs
+      - run: flutter build macos --release
+      - run: ./scripts/build_mcp_cli.ps1
+      - name: Verify and package
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $app = 'build/macos/Build/Products/Release/Aaalice NAI Launcher.app'
+          codesign --force --deep --sign - $app
+          if ($LASTEXITCODE -ne 0) { throw 'Signing failed' }
+          codesign --verify --deep --strict $app
+          if ($LASTEXITCODE -ne 0) { throw 'Signature verification failed' }
+          $executable = /usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$app/Contents/Info.plist"
+          lipo -verify_arch arm64 "$app/Contents/MacOS/$executable"
+          if ($LASTEXITCODE -ne 0) { throw 'Missing arm64 architecture' }
+          New-Item -ItemType Directory -Force dist | Out-Null
+          $archive = 'dist/NAI_Launcher_macOS_prompt-fix_93c0431.zip'
+          ditto -c -k --sequesterRsrc --keepParent $app $archive
+          if ($LASTEXITCODE -ne 0) { throw 'Packaging failed' }
+          $hash = (Get-FileHash $archive -Algorithm SHA256).Hash.ToLowerInvariant()
+          "$hash  NAI_Launcher_macOS_prompt-fix_93c0431.zip" | Set-Content -Encoding utf8 'dist/SHA256SUMS.txt'
+          "Source: 93c04315ed55307eb0a9864c03d590ab2b0f459a; Architecture: arm64 verified; Signing: ad hoc, not notarized; Cloud drive OAuth: not configured" | Set-Content -Encoding utf8 'dist/BUILD_INFO.txt'
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos-prompt-fix-93c0431
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 14
